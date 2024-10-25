@@ -1,5 +1,4 @@
-import time
-import psutil
+
 import tkinter as tk
 from tkinter import ttk
 import matplotlib.pyplot as plt
@@ -14,7 +13,7 @@ import matplotlib.dates as mdates
 class StockApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Technical Trades")
+        self.root.title("Trend Trader")
         self.root.geometry("1200x800")
         self.root.configure(bg='#032B44')
 
@@ -142,16 +141,13 @@ class StockApp:
             'Volume': [1000, 1500, 2000, 1200, 1300]
         }, index=pd.date_range(start='2024-01-01', periods=5))
 
-        self.create_graph(data, 'Technical Trades')
+        self.create_graph(data, 'TechnicalTrades')
 
     def refresh_graph(self):
         """ Refresh the graph based on the current input and selected indicators. """
         ticker = self.ticker_entry.get().strip().upper()
 
         if ticker:
-            start_time = time.time()
-            initial_cpu = psutil.cpu_percent()
-            initial_memory = psutil.virtual_memory().percent
             # Fetch stock data
             try:
                 data = yf.download(ticker, period=self.period_var.get(), interval='1d')
@@ -160,15 +156,9 @@ class StockApp:
                     return
                 self.update_metrics(data)
                 self.create_graph(data, ticker)
+                self.log_calculations()
             except Exception as e:
                 print(f"Error fetching data: {e}")
-            end_time = time.time()
-            final_cpu = psutil.cpu_percent()
-            final_memory = psutil.virtual_memory().percent
-
-            print(f"Time taken to refresh graph: {end_time - start_time:.2f} seconds")
-            print(f"CPU usage before: {initial_cpu}%, after: {final_cpu}%")
-            print(f"Memory usage before: {initial_memory}%, after: {final_memory}%")
 
     def update_metrics(self, data):
         """ Update the displayed metrics based on the fetched data. """
