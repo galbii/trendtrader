@@ -141,7 +141,7 @@ class StockApp:
             'Volume': [1000, 1500, 2000, 1200, 1300]
         }, index=pd.date_range(start='2024-01-01', periods=5))
 
-        self.create_graph(data, 'AAPL')
+        self.create_graph(data, 'TechnicalTrades')
 
     def refresh_graph(self):
         """ Refresh the graph based on the current input and selected indicators. """
