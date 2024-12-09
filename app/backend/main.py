@@ -1,61 +1,41 @@
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+
+from fastapi import FastAPI, HTTPException
 import yfinance as yf
+from typing import List
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# Helper function to get the stock data for a specific ticker and interval
-def get_stock_data(ticker: str, interval: str):
-    stock = yf.Ticker(ticker)
-    
-    # Mapping intervals to valid periods
-    valid_intervals = {
-        '1m': ('1d', '1m'),  # Use period of 1 day for 1-minute interval
-        '5m': ('5d', '5m'),  # Use period of 5 days for 5-minute interval
-        '15m': ('5d', '15m') # Use period of 5 days for 15-minute interval
-    }
-    
-    if interval not in valid_intervals:
-        raise HTTPException(status_code=400, detail="Invalid interval")
+# Enable CORS for local development
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    period, yf_interval = valid_intervals[interval]
-    
-    # Fetch historical stock data based on period and interval
-    stock_data = stock.history(period=period, interval=yf_interval)
-    
-    return {
-        "times": stock_data.index.strftime('%Y-%m-%d %H:%M:%S').tolist(),
-        "prices": stock_data['Close'].tolist()
-    }
-
-@app.post("/logs")
-async def log_message(request: Request):
-        log_entry = await request.json()
-        print(f"Received log: {log_entry}")
-                # Save the log to your logging system here
-        return JSONResponse(content={"message": "Log received successfully"}, status_code=200)
-
-# Route to get live stock data
-@app.get("/stock/{ticker}/live")
-async def live_stock_data(ticker: str):
+@app.get("/stock-data")
+def get_stock_data(ticker: str, interval: str = "1m", range: str = "1d"):
     try:
-        # Fetch live stock data (latest close price)
-        stock = yf.Ticker(ticker)
-        stock_data = stock.history(period="1d", interval="1m")
-        last_record = stock_data.iloc[-1]
-        return {
-            "time": last_record.name.strftime('%Y-%m-%d %H:%M:%S'),
-            "price": last_record['Close']
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Use yfinance to fetch stock data
+        stock_data = yf.Ticker(ticker)
 
-# Route to get historical stock data for a given interval
-@app.get("/stock/{ticker}/historical")
-async def historical_stock_data(ticker: str, interval: str):
-    try:
-        data = get_stock_data(ticker, interval)
-        print(f"Returning data: {data}")
-        return data
+        # Fetch historical market data
+        historical_data = stock_data.history(period=range, interval=interval)
+
+        if historical_data.empty:
+            raise HTTPException(status_code=404, detail="No data found for the given parameters")
+
+        # Extract timestamps and closing prices
+        timestamps = historical_data.index.tolist()  # Pandas Index object
+        prices = historical_data["Close"].tolist()   # Extracting 'Close' prices
+
+        # Convert timestamps to UNIX timestamps (seconds since 1970)
+        timestamps = [int(ts.timestamp()) for ts in timestamps]
+
+        return {"timestamps": timestamps, "prices": prices}
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error fetching stock data: {str(e)}")
+
