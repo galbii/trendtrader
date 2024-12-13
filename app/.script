@@ -1,3 +1,141 @@
+I have this backend and frontend for my trading desk application to provide traders the tools that will help them make trades.
+import pandas as pd
+import numpy as np
+from sklearn.linear_model import LinearRegression
+from fastapi import FastAPI, HTTPException
+import yfinance as yf
+from typing import List, Dict
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI()
+
+# Enable CORS for local development
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+# In-memory trade log (this would typically be a database in a production app)
+trade_log = []
+
+def predict_stock_price(prices: List[float], days_ahead: int = 5):
+    # Prepare the data for Linear Regression
+    data = pd.DataFrame(prices, columns=['price'])
+    data['day'] = np.arange(len(prices))
+
+    # Train a simple Linear Regression model
+    model = LinearRegression()
+    model.fit(data[['day']], data['price'])
+
+    # Predict the next `days_ahead` days
+    future_days = np.arange(len(prices), len(prices) + days_ahead)
+    predicted_prices = model.predict(future_days.reshape(-1, 1))
+
+    return predicted_prices.tolist()
+
+
+@app.get("/stock-data")
+def get_stock_data(ticker: str, interval: str = "1m", range: str = "1d", show_regression: bool = False):
+    try:
+        stock_data = yf.Ticker(ticker)
+
+        # Adjust period and interval based on range
+        if range == "1d":
+            period = "1d"
+            if interval not in ["1m", "5m", "15m"]:
+                interval = "1m"
+        elif range == "5d":
+            period = "5d"
+            if interval not in ["5m", "15m", "1h"]:
+                interval = "5m"
+        elif range == "1mo":
+            period = "1mo"
+            if interval not in ["15m", "1h"]:
+                interval = "1h"
+        elif range == "6mo":
+            period = "6mo"
+            interval = "1d"
+        elif range == "1y":
+            period = "1y"
+            interval = "1d"
+        else:
+            period = "1d"
+            interval = "1m"
+
+        # Log query parameters
+        print(f"Fetching data for ticker: {ticker}, range: {range}, interval: {interval}")
+        
+        historical_data = stock_data.history(period=period, interval=interval)
+
+        if historical_data.empty:
+            raise HTTPException(status_code=404, detail="No data found for the given parameters")
+
+        timestamps = historical_data.index.tolist()
+        prices = historical_data["Close"].tolist()
+
+        # Debugging: Check type of timestamps before calling .timestamp()
+        print(f"Type of timestamps before conversion: {type(timestamps)}")
+        if isinstance(timestamps, list) and all(isinstance(ts, pd.Timestamp) for ts in timestamps):
+            timestamps = [int(ts.timestamp()) for ts in timestamps]
+        else:
+            raise HTTPException(status_code=500, detail="Timestamps are not in the expected format")
+
+        # Log the fetched data
+        print(f"Fetched {len(prices)} prices")
+
+        # Regression Line Logic
+        regression_data = []
+        if show_regression:
+            # Ensure there are enough data points
+            if len(prices) < 2:
+                raise HTTPException(status_code=400, detail="Not enough data to perform regression")
+            
+            # Prepare data for regression
+            X = np.array(range(len(prices))).reshape(-1, 1)  # Use index as the X feature
+            y = np.array(prices)  # Use closing prices as target values
+
+            # Create a LinearRegression model
+            model = LinearRegression()
+            model.fit(X, y)
+
+            # Predict values for the regression line
+            regression_data = model.predict(X).tolist()
+
+        return {"timestamps": timestamps, "prices": prices, "regression_data": regression_data}
+
+    except Exception as e:
+        print(f"Error: {str(e)}")  # Log the error for debugging
+        raise HTTPException(status_code=500, detail=f"Error fetching stock data: {str(e)}")
+
+@app.post("/log-trade")
+def log_trade(trade: Dict):
+    # Store the trade (e.g., {"ticker": "AAPL", "price": 150, "time": "2024-12-10T14:45", "status": "open"})
+    trade_log.append(trade)
+    return {"message": "Trade logged successfully", "trade": trade}
+
+@app.put("/update-trade/{trade_id}")
+def update_trade(trade_id: int, trade: Dict):
+    # Modify an existing trade based on trade_id
+    if 0 <= trade_id < len(trade_log):
+        trade_log[trade_id].update(trade)
+        return {"message": "Trade updated successfully", "trade": trade_log[trade_id]}
+    raise HTTPException(status_code=404, detail="Trade not found")
+
+@app.delete("/opt-out-trade/{trade_id}")
+def opt_out_trade(trade_id: int):
+    # Remove a trade from the log
+    if 0 <= trade_id < len(trade_log):
+        removed_trade = trade_log.pop(trade_id)
+        return {"message": "Trade removed", "trade": removed_trade}
+    raise HTTPException(status_code=404, detail="Trade not found")
+
+@app.get("/trade-log")
+def get_trade_log():
+    return {"trade_log": trade_log}
+
+
 
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
@@ -70,27 +208,70 @@ const StockChartViewer = () => {
   const [rsiData, setRsiData] = useState([]);
   const [showMACD, setShowMACD] = useState(false);
   const [showRSI, setShowRSI] = useState(false);
+  const [predictedPrices, setPredictedPrices] = useState(false);
+const [showRegression, setShowRegression] = useState(false);
+const [regressionData, setRegressionData] = useState(false);
 
+const fetchStockData = async () => {
+  try {
+    const response = await axios.get("http://127.0.0.1:8000/stock-data", {
+      params: { ticker, range, interval, show_regression: showRegression },
+    });
 
-  const fetchStockData = async () => {
-    try {
-      const response = await axios.get("http://127.0.0.1:8000/stock-data", {
-        params: { ticker, range, interval },
-      });
+    const { timestamps, prices, regression_data } = response.data;
+    const formattedLabels = formatTimestamps(timestamps, range, interval);
 
-      const { timestamps, prices } = response.data;
-      const formattedLabels = formatTimestamps(timestamps, range, interval);
+    setLabels(formattedLabels);
+    setData(prices);
+    setRegressionData(regression_data);  // Store regression data
 
-      setLabels(formattedLabels);
-      setData(prices);
-    } catch (error) {
-      console.error("Error fetching stock data:", error);
+    if (showRegression && regression_data) {
+      // Extend regression for the next 10 intervals
+      const extendedRegressionData = [...regression_data];
+      const lastTimestamp = timestamps[timestamps.length - 1];
+
+        const nextTimestamp = lastTimestamp + (intervalToSeconds(interval) * i);
+        const nextPrice = calculatePredictedPrice(regression_data, nextTimestamp); // Function to predict price
+        extendedRegressionData.push({ timestamp: nextTimestamp, price: nextPrice });
+      }
+
+      setRegressionData(extendedRegressionData);
     }
-  };
+
+  } catch (error) {
+    console.error("Error fetching stock data:", error);
+  }
+};
+
+const intervalToSeconds = (interval) => {
+  switch (interval) {
+    case '1m': return 60;
+    case '5m': return 300;
+    case '15m': return 900;
+    case '1h': return 3600;
+    case '1d': return 86400;
+    default: return 86400;  // Default to 1 day
+  }
+};
+
+const calculatePredictedPrice = (regression_data, nextTimestamp) => {
+  // Assuming regression_data has the format [{timestamp, price}]
+  const x1 = regression_data[regression_data.length - 1].timestamp;
+  const y1 = regression_data[regression_data.length - 1].price;
+
+  // Calculate the linear regression slope (this assumes linear data)
+  const x0 = regression_data[regression_data.length - 2].timestamp;
+  const y0 = regression_data[regression_data.length - 2].price;
+  const slope = (y1 - y0) / (x1 - x0);  // Simple linear regression slope
+
+  const predictedPrice = y1 + slope * (nextTimestamp - x1);
+  return predictedPrice;
+};
+
 
   useEffect(() => {
     fetchStockData();
-  }, [ticker, range, interval]);
+  }, [ticker, range, interval, showRegression]);
 
 const padData = (data, length) => {
   const padding = new Array(length - data.length).fill(null); // Pad with nulls
@@ -247,47 +428,48 @@ const normalizeData = (data) => {
     }
   };
 
+
 const chartData = {
-    labels,
-    datasets: [
-      {
-        label: `${ticker} Price`,
-        data,
-        borderColor: "rgba(75, 192, 192, 1)",
-        backgroundColor: "rgba(75, 192, 192, 0.2)",
-        borderWidth: 2,
-        fill: true,
-        pointRadius: 5,
-        pointHoverRadius: 7,
-        pointBackgroundColor: "rgba(75, 192, 192, 1)",
-        pointBorderColor: "#fff",
-      },
-      showSMA && {
-        label: `SMA (${smaPeriod} Period)`,
-        data: smaData,
-        borderColor: "rgba(255, 99, 132, 1)",
-        backgroundColor: "rgba(255, 99, 132, 0.2)",
-        borderWidth: 2,
-        fill: false,
-      },
-      showEMA && {
-        label: `EMA (${emaPeriod} Period)`,
-        data: emaData,
-        borderColor: "rgba(153, 102, 255, 1)",
-        backgroundColor: "rgba(153, 102, 255, 0.2)",
-        borderWidth: 2,
-        fill: false,
-      },
-      showRSI && {
-        label: "RSI",
-        data: normalizeData(rsiData),
-        borderColor: "rgba(255, 99, 132, 1)",
-        backgroundColor: "rgba(255, 99, 132, 0.2)",
-        borderWidth: 2,
-        fill: false,
-      },
-    ].filter(Boolean),
-  };
+  labels,
+  datasets: [
+    {
+      label: `${ticker} Price`,
+      data,
+      borderColor: "rgba(75, 192, 192, 1)",
+      backgroundColor: "rgba(75, 192, 192, 0.2)",
+      borderWidth: 2,
+      fill: true,
+      pointRadius: 5,
+      pointHoverRadius: 7,
+      pointBackgroundColor: "rgba(75, 192, 192, 1)",
+      pointBorderColor: "#fff",
+    },
+    showSMA && {
+      label: `SMA (${smaPeriod} Period)`,
+      data: smaData,
+      borderColor: "rgba(255, 99, 132, 1)",
+      backgroundColor: "rgba(255, 99, 132, 0.2)",
+      borderWidth: 2,
+      fill: false,
+    },
+    showEMA && {
+      label: `EMA (${emaPeriod} Period)`,
+      data: emaData,
+      borderColor: "rgba(153, 102, 255, 1)",
+      backgroundColor: "rgba(153, 102, 255, 0.2)",
+      borderWidth: 2,
+      fill: false,
+    },
+    showRegression && {
+      label: "Regression Line",
+      data: regressionData.map(point => point.price),  // Use price data from regressionData
+      borderColor: "rgba(255, 159, 64, 1)",
+      backgroundColor: "rgba(255, 159, 64, 0.2)",
+      borderWidth: 2,
+      fill: false,
+    },
+  ].filter(Boolean),
+};
 
 const macdRsiData = {
     labels,
@@ -313,17 +495,25 @@ const macdRsiData = {
     ].filter(Boolean),
   };
 
+
 const chartOptions = {
   responsive: true,
   scales: {
     x: {
-      type: 'category',  // Same as above
+      type: 'category',
+      ticks: {
+        maxRotation: 45,
+        autoSkip: true,
+        autoSkipPadding: 10,
+      },
+      min: 0,
+      max: labels.length - 1, // Ensure you have a maximum x-value based on data length
     },
     y: {
       beginAtZero: false,
       ticks: {
-        max: 1,  // RSI / MACD normalized
-        min: -1,
+        max: Math.max(...data),  // Adjust Y-axis to data range
+        min: Math.min(...data),  // Adjust Y-axis to data range
         stepSize: 0.5,
       },
     },
@@ -333,6 +523,18 @@ const chartOptions = {
       pan: {
         enabled: true,
         mode: 'xy',
+        speed: 5, // Adjust panning speed for smoother experience
+        threshold: 10,  // Set panning threshold for better user experience
+        onPan: ({ chart }) => {
+          const { left, right } = chart.scales.x;
+          const { dataLength } = chart.config.data.labels;
+          const middleIndex = dataLength - 1;
+
+          // Check if the chart has been scrolled to the rightmost part
+          if (right === middleIndex) {
+            chart.resetZoom();  // Reset the zoom if the rightmost part reaches the center
+          }
+        },
       },
       zoom: {
         enabled: true,
@@ -340,9 +542,8 @@ const chartOptions = {
       },
     },
   },
-  onClick: handleChartClick, // Attach chart click handler
+  onClick: handleChartClick,
 };
-
 
 const macdRsiOptions = {
   responsive: true,
@@ -456,7 +657,16 @@ return (
           disabled={!showSMA}
         />
       </div>
-
+<div style={{ marginBottom: "20px" }}>
+  <label>
+    <input
+      type="checkbox"
+      checked={showRegression}
+      onChange={() => setShowRegression(!showRegression)}
+    />
+    Show Regression Curve
+  </label>
+</div>
       <div style={{ marginBottom: "20px" }}>
         <label>
           <input
